@@ -10,12 +10,23 @@ import plotly.express as px
 
 from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.feature_selection import SelectKBest, f_regression
+from sklearn.feature_selection import SelectKBest, f_classif, f_regression
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    precision_score,
+    r2_score,
+    recall_score,
+)
 from sklearn.model_selection import KFold, cross_val_score, train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -202,23 +213,41 @@ def get_preprocessor(x_df: pd.DataFrame) -> tuple[ColumnTransformer, list[str], 
     return preprocessor, numeric_cols, categorical_cols
 
 
-def get_regression_model(model_name: str, random_state: int):
-    if model_name == "Linear Regression":
-        return LinearRegression()
-    if model_name == "Random Forest Regressor":
-        return RandomForestRegressor(
+def get_model(model_name: str, random_state: int, task_type: str):
+    if task_type == "regression":
+        if model_name == "Linear Regression":
+            return LinearRegression()
+        if model_name == "Random Forest Regressor":
+            return RandomForestRegressor(
+                n_estimators=300,
+                random_state=random_state,
+                n_jobs=-1,
+            )
+        return MLPRegressor(
+            hidden_layer_sizes=(64, 32),
+            activation="relu",
+            solver="adam",
+            learning_rate_init=0.001,
+            max_iter=800,
+            random_state=random_state,
+        )
+
+    if model_name == "Logistic-like (MLP Classifier)":
+        return MLPClassifier(
+            hidden_layer_sizes=(64, 32),
+            activation="relu",
+            solver="adam",
+            learning_rate_init=0.001,
+            max_iter=800,
+            random_state=random_state,
+        )
+    if model_name == "Random Forest Classifier":
+        return RandomForestClassifier(
             n_estimators=300,
             random_state=random_state,
             n_jobs=-1,
         )
-    return MLPRegressor(
-        hidden_layer_sizes=(64, 32),
-        activation="relu",
-        solver="adam",
-        learning_rate_init=0.001,
-        max_iter=800,
-        random_state=random_state,
-    )
+    return KNeighborsClassifier(n_neighbors=7)
 
 
 def show_corr_heatmap(df: pd.DataFrame):
@@ -244,6 +273,34 @@ def explain_box(what: str, why: str):
         """,
         unsafe_allow_html=True,
     )
+
+
+def prepare_target_series(y_series: pd.Series) -> tuple[pd.Series, str]:
+    """
+    Convert target to a numeric series suitable for modeling.
+    Returns numeric target and a short mode label for UI messaging.
+    """
+    if pd.api.types.is_numeric_dtype(y_series):
+        return y_series, "numeric"
+
+    coerced = pd.to_numeric(y_series, errors="coerce")
+    if coerced.notna().sum() > 0 and coerced.notna().sum() >= int(0.8 * len(y_series)):
+        # Keep values that can be interpreted as numbers (e.g. "85", "90", ...).
+        return coerced, "numeric_from_text"
+
+    encoded = pd.Series(pd.Categorical(y_series).codes, index=y_series.index).astype(float)
+    return encoded, "categorical_encoded"
+
+
+def detect_task_type(original_target: pd.Series, prepared_mode: str) -> str:
+    # If target is categorical text, prefer classification workflow.
+    if prepared_mode == "categorical_encoded":
+        return "classification"
+    # Numeric target with few distinct integer-ish levels is usually classification.
+    unique_count = original_target.nunique(dropna=True)
+    if unique_count <= 12 and not pd.api.types.is_float_dtype(original_target):
+        return "classification"
+    return "regression"
 
 
 st.sidebar.header("Data Source")
@@ -292,10 +349,6 @@ test_size = st.sidebar.slider("Test Size", min_value=0.1, max_value=0.4, value=0
 drop_duplicates = st.sidebar.checkbox("Drop Duplicates", value=True)
 k_features = st.sidebar.slider("Top K Features", min_value=3, max_value=25, value=10, step=1)
 folds = st.sidebar.slider("K-Folds", min_value=3, max_value=10, value=5, step=1)
-model_name = st.sidebar.selectbox(
-    "Model",
-    ["Linear Regression", "Random Forest Regressor", "ANN (MLP Regressor)"],
-)
 st.sidebar.markdown("### Real-world data issues simulator")
 inject_missing_pct = st.sidebar.slider("Add missing values (%)", min_value=0, max_value=20, value=0, step=1)
 inject_outlier_pct = st.sidebar.slider("Add outliers (%)", min_value=0, max_value=15, value=0, step=1)
@@ -312,7 +365,9 @@ if drop_duplicates:
     work_df = work_df.drop_duplicates()
 
 X = work_df.drop(columns=[target_col])
-y = work_df[target_col]
+y_original = work_df[target_col]
+y, y_mode = prepare_target_series(y_original)
+task_type = detect_task_type(y_original, y_mode)
 
 if X.shape[1] == 0:
     st.error("No feature columns left after selecting target column.")
@@ -320,28 +375,44 @@ if X.shape[1] == 0:
 if y.isna().all():
     st.error("Target column contains only missing values.")
     st.stop()
-if not pd.api.types.is_numeric_dtype(y):
-    st.error(
-        "Selected target column is not numeric. "
-        "Choose a numeric target for regression (for example: final score marks)."
+if y_mode == "numeric_from_text":
+    st.sidebar.info("Target values were text numbers and were auto-converted to numeric.")
+elif y_mode == "categorical_encoded":
+    st.sidebar.warning(
+        "Selected target is categorical (text). It has been auto-encoded to numeric labels."
     )
-    st.stop()
+st.sidebar.caption(f"Detected task: {task_type.title()}")
+split_kwargs = {"test_size": test_size, "random_state": random_state}
+if task_type == "classification" and y.nunique(dropna=True) > 1:
+    split_kwargs["stratify"] = y
+
+if task_type == "regression":
+    model_name = st.sidebar.selectbox(
+        "Model",
+        ["Linear Regression", "Random Forest Regressor", "ANN (MLP Regressor)"],
+    )
+else:
+    model_name = st.sidebar.selectbox(
+        "Model",
+        ["Logistic-like (MLP Classifier)", "Random Forest Classifier", "KNN Classifier"],
+    )
 
 preprocessor, numeric_cols, categorical_cols = get_preprocessor(X)
-selected_model = get_regression_model(model_name, random_state)
+selected_model = get_model(model_name, random_state, task_type)
 
 x_preview = preprocessor.fit_transform(X)
 if hasattr(x_preview, "toarray"):
     x_preview = x_preview.toarray()
 safe_k = min(k_features, x_preview.shape[1])
-selector_preview = SelectKBest(score_func=f_regression, k=safe_k)
+score_func = f_regression if task_type == "regression" else f_classif
+selector_preview = SelectKBest(score_func=score_func, k=safe_k)
 selector_preview.fit(x_preview, y)
 feature_scores = selector_preview.scores_
 feature_score_df = pd.DataFrame(
     {"FeatureIndex": np.arange(len(feature_scores)), "Score": feature_scores}
 ).sort_values("Score", ascending=False)
 
-selector = SelectKBest(score_func=f_regression, k=safe_k)
+selector = SelectKBest(score_func=score_func, k=safe_k)
 final_pipeline = Pipeline(
     steps=[
         ("preprocess", preprocessor),
@@ -451,9 +522,7 @@ elif current_step == "5) Data Split":
         "We split data into training and testing sets.",
         "This checks if the model works on unseen data, not just memorized data.",
     )
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state
-    )
+    X_train, X_test, y_train, y_test = train_test_split(X, y, **split_kwargs)
     st.write(f"Train: {X_train.shape} | Test: {X_test.shape}")
 
 elif current_step == "6) Model Selection":
@@ -462,11 +531,18 @@ elif current_step == "6) Model Selection":
         f"Current selected model: {model_name}.",
         "Different models learn patterns in different ways.",
     )
-    st.markdown(
-        "- Linear Regression: simple baseline\n"
-        "- Random Forest: strong non-linear model\n"
-        "- ANN (MLP): neural-network approach"
-    )
+    if task_type == "regression":
+        st.markdown(
+            "- Linear Regression: simple baseline\n"
+            "- Random Forest Regressor: strong non-linear model\n"
+            "- ANN (MLP Regressor): neural-network approach"
+        )
+    else:
+        st.markdown(
+            "- MLP Classifier: neural-network style classifier\n"
+            "- Random Forest Classifier: robust tree-based classifier\n"
+            "- KNN Classifier: neighborhood-based classification"
+        )
 
 elif current_step == "7) Model Training":
     st.subheader("Step 7: Model Training")
@@ -475,9 +551,7 @@ elif current_step == "7) Model Training":
         "Training is where the model learns relationships from examples.",
     )
     if st.button("Train Model"):
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state
-        )
+        X_train, X_test, y_train, y_test = train_test_split(X, y, **split_kwargs)
         final_pipeline.fit(X_train, y_train)
         st.success("Training completed.")
 
@@ -490,13 +564,30 @@ elif current_step == "8) K-Fold Validation":
     if st.button("Run K-Fold"):
         kf = KFold(n_splits=folds, shuffle=True, random_state=random_state)
         cv_model = clone(final_pipeline)
-        neg_mse_scores = cross_val_score(
-            cv_model, X, y, cv=kf, scoring="neg_mean_squared_error", n_jobs=-1
-        )
-        rmse_scores = np.sqrt(-neg_mse_scores)
-        cv_df = pd.DataFrame({"Fold": np.arange(1, folds + 1), "RMSE": rmse_scores})
-        st.dataframe(cv_df, use_container_width=True)
-        st.metric("Average RMSE", f"{rmse_scores.mean():.4f}")
+        if task_type == "regression":
+            neg_mse_scores = cross_val_score(
+                cv_model, X, y, cv=kf, scoring="neg_mean_squared_error", n_jobs=-1
+            )
+            rmse_scores = np.sqrt(-neg_mse_scores)
+            cv_df = pd.DataFrame({"Fold": np.arange(1, folds + 1), "RMSE": rmse_scores})
+            st.dataframe(cv_df, use_container_width=True)
+            st.metric("Average RMSE", f"{rmse_scores.mean():.4f}")
+        else:
+            acc_scores = cross_val_score(cv_model, X, y, cv=kf, scoring="accuracy", n_jobs=-1)
+            f1_scores = cross_val_score(
+                cv_model, X, y, cv=kf, scoring="f1_weighted", n_jobs=-1
+            )
+            cv_df = pd.DataFrame(
+                {
+                    "Fold": np.arange(1, folds + 1),
+                    "Accuracy": acc_scores,
+                    "F1_weighted": f1_scores,
+                }
+            )
+            st.dataframe(cv_df, use_container_width=True)
+            c1, c2 = st.columns(2)
+            c1.metric("Average Accuracy", f"{acc_scores.mean():.4f}")
+            c2.metric("Average F1 (weighted)", f"{f1_scores.mean():.4f}")
 
 elif current_step == "9) Final Performance":
     st.subheader("Step 9: Performance Metrics")
@@ -505,24 +596,40 @@ elif current_step == "9) Final Performance":
         "These numbers tell us how good the model is in practical use.",
     )
     if st.button("Evaluate Final Model"):
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state
-        )
+        X_train, X_test, y_train, y_test = train_test_split(X, y, **split_kwargs)
         eval_model = clone(final_pipeline)
         eval_model.fit(X_train, y_train)
         preds = eval_model.predict(X_test)
 
-        mse_val = mean_squared_error(y_test, preds)
-        mae_val = mean_absolute_error(y_test, preds)
-        rmse_val = np.sqrt(mse_val)
-        r2_val = r2_score(y_test, preds)
+        if task_type == "regression":
+            mse_val = mean_squared_error(y_test, preds)
+            mae_val = mean_absolute_error(y_test, preds)
+            rmse_val = np.sqrt(mse_val)
+            r2_val = r2_score(y_test, preds)
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("MSE", f"{mse_val:.3f}")
-        c2.metric("MAE", f"{mae_val:.3f}")
-        c3.metric("RMSE", f"{rmse_val:.3f}")
-        c4.metric("R2", f"{r2_val:.3f}")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("MSE", f"{mse_val:.3f}")
+            c2.metric("MAE", f"{mae_val:.3f}")
+            c3.metric("RMSE", f"{rmse_val:.3f}")
+            c4.metric("R2", f"{r2_val:.3f}")
 
-        results_df = pd.DataFrame({"Actual": y_test.values, "Predicted": preds})
-        fig_pred = px.scatter(results_df, x="Actual", y="Predicted", title="Actual vs Predicted")
-        st.plotly_chart(fig_pred, use_container_width=True)
+            results_df = pd.DataFrame({"Actual": y_test.values, "Predicted": preds})
+            fig_pred = px.scatter(results_df, x="Actual", y="Predicted", title="Actual vs Predicted")
+            st.plotly_chart(fig_pred, use_container_width=True)
+        else:
+            acc_val = accuracy_score(y_test, preds)
+            precision_val = precision_score(y_test, preds, average="weighted", zero_division=0)
+            recall_val = recall_score(y_test, preds, average="weighted", zero_division=0)
+            f1_val = f1_score(y_test, preds, average="weighted", zero_division=0)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Accuracy", f"{acc_val:.3f}")
+            c2.metric("Precision (weighted)", f"{precision_val:.3f}")
+            c3.metric("Recall (weighted)", f"{recall_val:.3f}")
+            c4.metric("F1 (weighted)", f"{f1_val:.3f}")
+
+            confusion_df = pd.crosstab(
+                pd.Series(y_test, name="Actual"),
+                pd.Series(preds, name="Predicted"),
+            )
+            st.write("Confusion Matrix")
+            st.dataframe(confusion_df, use_container_width=True)
