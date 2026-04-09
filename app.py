@@ -1,4 +1,5 @@
 import os
+import io
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -39,19 +40,49 @@ st.markdown(
 )
 
 
-def _read_csv_with_separator_fallback(csv_path: Path) -> pd.DataFrame:
-    try:
-        return pd.read_csv(csv_path, sep=";")
-    except Exception:
-        return pd.read_csv(csv_path)
+def _separator_candidates(separator_label: str) -> list[tuple[str | None, dict]]:
+    if separator_label == "Comma (,)":
+        return [(",", {})]
+    if separator_label == "Semicolon (;)":
+        return [(";", {})]
+    if separator_label == "Tab":
+        return [("\t", {})]
+    return [
+        (",", {}),
+        (";", {}),
+        ("\t", {}),
+        (None, {"engine": "python"}),
+    ]
 
 
-def _read_uploaded_csv_with_fallback(uploaded_file) -> pd.DataFrame:
-    try:
-        return pd.read_csv(uploaded_file, sep=";")
-    except Exception:
-        uploaded_file.seek(0)
-        return pd.read_csv(uploaded_file)
+def _pick_best_parsed_df(candidates: list[pd.DataFrame]) -> pd.DataFrame:
+    if not candidates:
+        raise ValueError("Unable to parse CSV file.")
+    # Prefer parse with the most columns and most non-null cells.
+    return max(candidates, key=lambda d: (d.shape[1], int(d.notna().sum().sum())))
+
+
+def _read_csv_with_separator_fallback(csv_path: Path, separator_label: str) -> pd.DataFrame:
+    candidates = []
+    for sep, kwargs in _separator_candidates(separator_label):
+        try:
+            parsed = pd.read_csv(csv_path, sep=sep, **kwargs)
+            candidates.append(parsed)
+        except Exception:
+            continue
+    return _pick_best_parsed_df(candidates)
+
+
+def _read_uploaded_csv_with_fallback(uploaded_file, separator_label: str) -> pd.DataFrame:
+    raw_bytes = uploaded_file.getvalue()
+    candidates = []
+    for sep, kwargs in _separator_candidates(separator_label):
+        try:
+            parsed = pd.read_csv(io.BytesIO(raw_bytes), sep=sep, **kwargs)
+            candidates.append(parsed)
+        except Exception:
+            continue
+    return _pick_best_parsed_df(candidates)
 
 
 def discover_student_dataset_files() -> dict[str, Path]:
@@ -218,13 +249,18 @@ def explain_box(what: str, why: str):
 st.sidebar.header("Data Source")
 discovered_datasets = discover_student_dataset_files()
 source_mode = st.sidebar.radio("Input Mode", ["Auto detect", "Manual upload"], horizontal=True)
+separator_choice = st.sidebar.selectbox(
+    "CSV Delimiter",
+    ["Auto detect", "Comma (,)", "Semicolon (;)", "Tab"],
+    index=0,
+)
 
 if source_mode == "Manual upload":
     uploaded = st.sidebar.file_uploader("Upload student CSV", type=["csv"])
     if uploaded is None:
         st.warning("Upload a CSV file to continue.")
         st.stop()
-    df = _read_uploaded_csv_with_fallback(uploaded)
+    df = _read_uploaded_csv_with_fallback(uploaded, separator_choice)
     st.sidebar.success(f"Using uploaded file: {uploaded.name}")
 else:
     if not discovered_datasets:
@@ -237,9 +273,17 @@ else:
     default_idx = dataset_options.index("Student_Performance.csv") if "Student_Performance.csv" in dataset_options else 0
     selected_dataset = st.sidebar.selectbox("Auto-detected Dataset", dataset_options, index=default_idx)
     selected_path = discovered_datasets[selected_dataset]
-    df = _read_csv_with_separator_fallback(selected_path)
+    df = _read_csv_with_separator_fallback(selected_path, separator_choice)
     st.sidebar.success(f"Auto-loaded: {selected_dataset}")
     st.sidebar.caption(f"Source: {selected_path}")
+
+df.columns = [str(c).strip() for c in df.columns]
+if df.shape[1] < 2:
+    st.error(
+        "CSV appears to have only one column after parsing. "
+        "Change 'CSV Delimiter' in sidebar (try Comma or Semicolon)."
+    )
+    st.stop()
 
 target_default = "G3" if "G3" in df.columns else df.columns[-1]
 target_col = st.sidebar.selectbox("Target Column", df.columns, index=df.columns.get_loc(target_default))
@@ -269,6 +313,19 @@ if drop_duplicates:
 
 X = work_df.drop(columns=[target_col])
 y = work_df[target_col]
+
+if X.shape[1] == 0:
+    st.error("No feature columns left after selecting target column.")
+    st.stop()
+if y.isna().all():
+    st.error("Target column contains only missing values.")
+    st.stop()
+if not pd.api.types.is_numeric_dtype(y):
+    st.error(
+        "Selected target column is not numeric. "
+        "Choose a numeric target for regression (for example: final score marks)."
+    )
+    st.stop()
 
 preprocessor, numeric_cols, categorical_cols = get_preprocessor(X)
 selected_model = get_regression_model(model_name, random_state)
