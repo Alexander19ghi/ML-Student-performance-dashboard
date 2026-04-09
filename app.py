@@ -303,6 +303,56 @@ def detect_task_type(original_target: pd.Series, prepared_mode: str) -> str:
     return "regression"
 
 
+def show_concept_explainer(task_type: str, model_name: str):
+    with st.expander("Concept explainer: why this pipeline choice?", expanded=True):
+        st.markdown(f"**Detected task:** `{task_type.title()}`")
+        if task_type == "regression":
+            st.markdown(
+                "- **Why regression:** target behaves like a numeric value, so the model predicts a continuous number.\n"
+                "- **Feature score method (`f_regression`):** ranks features by linear relation with numeric target.\n"
+                "- **Main metrics:** MSE/MAE/RMSE/R2.\n"
+                "  - MSE/RMSE penalize large errors more.\n"
+                "  - MAE gives average absolute error.\n"
+                "  - R2 shows explained variance."
+            )
+            if model_name == "Linear Regression":
+                st.info(
+                    "Model concept: Linear Regression is a baseline that learns straight-line relationships and is easy to interpret."
+                )
+            elif model_name == "Random Forest Regressor":
+                st.info(
+                    "Model concept: Random Forest Regressor combines many trees, capturing non-linear patterns and feature interactions."
+                )
+            else:
+                st.info(
+                    "Model concept: MLP Regressor is a neural network that can learn complex non-linear mappings."
+                )
+        else:
+            st.markdown(
+                "- **Why classification:** target behaves like labels/classes, so the model predicts class membership.\n"
+                "- **Feature score method (`f_classif`):** ranks features by how well they separate classes.\n"
+                "- **Main metrics:** Accuracy, Precision, Recall, F1, Confusion Matrix.\n"
+                "  - Accuracy: overall correctness.\n"
+                "  - Precision/Recall/F1: class-quality trade-offs.\n"
+                "  - Confusion matrix: class-wise error analysis."
+            )
+            if model_name == "Logistic-like (MLP Classifier)":
+                st.info(
+                    "Model concept: MLP Classifier learns non-linear decision boundaries between classes."
+                )
+            elif model_name == "Random Forest Classifier":
+                st.info(
+                    "Model concept: Random Forest Classifier is robust on tabular data and handles mixed patterns well."
+                )
+            else:
+                st.info(
+                    "Model concept: KNN Classifier predicts by nearest neighbors in feature space."
+                )
+        st.caption(
+            "Cross-validation concept: K-Fold repeats train/test across multiple splits to reduce luck from one random split."
+        )
+
+
 st.sidebar.header("Data Source")
 discovered_datasets = discover_student_dataset_files()
 source_mode = st.sidebar.radio("Input Mode", ["Auto detect", "Manual upload"], horizontal=True)
@@ -396,6 +446,8 @@ else:
         "Model",
         ["Logistic-like (MLP Classifier)", "Random Forest Classifier", "KNN Classifier"],
     )
+
+show_concept_explainer(task_type, model_name)
 
 preprocessor, numeric_cols, categorical_cols = get_preprocessor(X)
 selected_model = get_model(model_name, random_state, task_type)
