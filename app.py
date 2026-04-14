@@ -138,6 +138,31 @@ def discover_student_dataset_files() -> dict[str, Path]:
     return found
 
 
+@st.cache_data(show_spinner=False)
+def load_public_default_student_dataset() -> tuple[pd.DataFrame, str]:
+    """
+    Fallback dataset loader for cloud deployments where local files are unavailable.
+    """
+    public_sources = [
+        (
+            "UCI Student Math (student-mat.csv)",
+            "https://archive.ics.uci.edu/ml/machine-learning-databases/00320/student-mat.csv",
+        ),
+        (
+            "UCI Student Portuguese (student-por.csv)",
+            "https://archive.ics.uci.edu/ml/machine-learning-databases/00320/student-por.csv",
+        ),
+    ]
+    for source_name, source_url in public_sources:
+        try:
+            fallback_df = pd.read_csv(source_url, sep=";")
+            if fallback_df.shape[1] >= 2:
+                return fallback_df, source_name
+        except Exception:
+            continue
+    raise ValueError("Could not load public fallback student dataset.")
+
+
 def inject_data_issues(
     source_df: pd.DataFrame,
     missing_pct: float,
@@ -372,18 +397,24 @@ if source_mode == "Manual upload":
     st.sidebar.success(f"Using uploaded file: {uploaded.name}")
 else:
     if not discovered_datasets:
-        st.error(
-            "Could not auto-find datasets. "
-            "Place Kaggle file like `Student_Performance.csv` in `Documents` or upload manually."
-        )
-        st.stop()
-    dataset_options = list(discovered_datasets.keys())
-    default_idx = dataset_options.index("Student_Performance.csv") if "Student_Performance.csv" in dataset_options else 0
-    selected_dataset = st.sidebar.selectbox("Auto-detected Dataset", dataset_options, index=default_idx)
-    selected_path = discovered_datasets[selected_dataset]
-    df = _read_csv_with_separator_fallback(selected_path, separator_choice)
-    st.sidebar.success(f"Auto-loaded: {selected_dataset}")
-    st.sidebar.caption(f"Source: {selected_path}")
+        try:
+            df, source_name = load_public_default_student_dataset()
+            st.sidebar.success(f"Auto-loaded public default dataset: {source_name}")
+            st.sidebar.caption("Source: UCI Machine Learning Repository")
+        except Exception:
+            st.error(
+                "Could not auto-load any dataset (local or public). "
+                "Please switch to Manual upload."
+            )
+            st.stop()
+    else:
+        dataset_options = list(discovered_datasets.keys())
+        default_idx = dataset_options.index("Student_Performance.csv") if "Student_Performance.csv" in dataset_options else 0
+        selected_dataset = st.sidebar.selectbox("Auto-detected Dataset", dataset_options, index=default_idx)
+        selected_path = discovered_datasets[selected_dataset]
+        df = _read_csv_with_separator_fallback(selected_path, separator_choice)
+        st.sidebar.success(f"Auto-loaded: {selected_dataset}")
+        st.sidebar.caption(f"Source: {selected_path}")
 
 df.columns = [str(c).strip() for c in df.columns]
 if df.shape[1] < 2:
