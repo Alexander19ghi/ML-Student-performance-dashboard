@@ -33,20 +33,53 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 
-st.set_page_config(page_title="ANN & ML MSE Dashboard", layout="wide")
-st.title("Simple ML Learning Dashboard (Step-by-Step)")
+st.set_page_config(page_title="Student ML Pipeline Studio", page_icon="📊", layout="wide")
 st.markdown(
     """
     <style>
-    .main .block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
+    .stApp {
+        background:
+            radial-gradient(circle at 10% 10%, rgba(59,130,246,0.15), transparent 30%),
+            radial-gradient(circle at 90% 10%, rgba(16,185,129,0.12), transparent 35%),
+            #020617;
+    }
+    .main .block-container {padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1200px;}
+    .hero-box {
+        border: 1px solid #334155;
+        border-radius: 14px;
+        padding: 16px 18px;
+        margin-bottom: 12px;
+        background: linear-gradient(135deg, rgba(30,41,59,0.9), rgba(15,23,42,0.95));
+        box-shadow: 0 10px 30px rgba(2,6,23,0.35);
+    }
+    .hero-title {
+        font-size: 2rem;
+        font-weight: 700;
+        margin: 0 0 6px 0;
+        color: #e2e8f0;
+    }
+    .hero-subtitle {
+        color: #93c5fd;
+        margin: 0;
+        font-size: 1rem;
+    }
     .guide-box {
         border: 1px solid #334155;
         border-radius: 10px;
         padding: 12px 14px;
-        background: #0f172a;
+        background: rgba(15, 23, 42, 0.9);
         margin: 8px 0;
     }
     </style>
+    """,
+    unsafe_allow_html=True,
+)
+st.markdown(
+    """
+    <div class="hero-box">
+        <p class="hero-title">Student ML Pipeline Studio</p>
+        <p class="hero-subtitle">Interactive end-to-end ML workflow with guided concepts, task-aware models, and live evaluation.</p>
+    </div>
     """,
     unsafe_allow_html=True,
 )
@@ -161,6 +194,52 @@ def load_public_default_student_dataset() -> tuple[pd.DataFrame, str]:
         except Exception:
             continue
     raise ValueError("Could not load public fallback student dataset.")
+
+
+@st.cache_data(show_spinner=False)
+def load_embedded_default_student_dataset() -> tuple[pd.DataFrame, str]:
+    """
+    Final fallback that always works without internet access.
+    """
+    rng = np.random.default_rng(42)
+    n_rows = 240
+    study_hours = rng.integers(1, 8, n_rows)
+    attendance = rng.integers(60, 101, n_rows)
+    sleep_hours = rng.integers(4, 9, n_rows)
+    previous_score = rng.integers(40, 96, n_rows)
+    internet_access = rng.choice(["yes", "no"], n_rows, p=[0.82, 0.18])
+    extracurricular = rng.choice(["yes", "no"], n_rows, p=[0.55, 0.45])
+    parental_support = rng.choice(["low", "medium", "high"], n_rows, p=[0.24, 0.5, 0.26])
+    final_score = (
+        0.34 * previous_score
+        + 2.6 * study_hours
+        + 0.18 * attendance
+        + 0.9 * sleep_hours
+        + np.where(internet_access == "yes", 2.4, -1.6)
+        + np.where(extracurricular == "yes", 1.2, 0.0)
+        + np.where(parental_support == "high", 2.2, np.where(parental_support == "medium", 0.8, -1.0))
+        + rng.normal(0, 3.2, n_rows)
+    )
+    final_score = np.clip(final_score, 0, 100).round(1)
+    final_grade = pd.cut(
+        final_score,
+        bins=[-1, 39, 59, 74, 89, 100],
+        labels=["F", "D", "C", "B", "A"],
+    ).astype(str)
+    embedded_df = pd.DataFrame(
+        {
+            "study_hours_per_day": study_hours,
+            "attendance_percent": attendance,
+            "sleep_hours": sleep_hours,
+            "previous_exam_score": previous_score,
+            "internet_access": internet_access,
+            "extracurricular": extracurricular,
+            "parental_support": parental_support,
+            "final_score": final_score,
+            "final_grade": final_grade,
+        }
+    )
+    return embedded_df, "Embedded synthetic student dataset"
 
 
 def inject_data_issues(
@@ -402,11 +481,9 @@ else:
             st.sidebar.success(f"Auto-loaded public default dataset: {source_name}")
             st.sidebar.caption("Source: UCI Machine Learning Repository")
         except Exception:
-            st.error(
-                "Could not auto-load any dataset (local or public). "
-                "Please switch to Manual upload."
-            )
-            st.stop()
+            df, source_name = load_embedded_default_student_dataset()
+            st.sidebar.warning("Public dataset unavailable. Loaded built-in backup dataset.")
+            st.sidebar.caption(f"Source: {source_name}")
     else:
         dataset_options = list(discovered_datasets.keys())
         default_idx = dataset_options.index("Student_Performance.csv") if "Student_Performance.csv" in dataset_options else 0
@@ -467,6 +544,12 @@ st.sidebar.caption(f"Detected task: {task_type.title()}")
 split_kwargs = {"test_size": test_size, "random_state": random_state}
 if task_type == "classification" and y.nunique(dropna=True) > 1:
     split_kwargs["stratify"] = y
+
+overview_c1, overview_c2, overview_c3, overview_c4 = st.columns(4)
+overview_c1.metric("Rows", f"{len(df)}")
+overview_c2.metric("Columns", f"{df.shape[1]}")
+overview_c3.metric("Target", str(target_col))
+overview_c4.metric("Task", task_type.title())
 
 if task_type == "regression":
     model_name = st.sidebar.selectbox(
