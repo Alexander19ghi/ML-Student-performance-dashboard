@@ -588,6 +588,116 @@ final_pipeline = Pipeline(
     ]
 )
 
+st.sidebar.markdown("### Demo / Presentation")
+presentation_mode = st.sidebar.checkbox(
+    "Presentation mode (auto-run full pipeline)",
+    value=False,
+    help="Runs preprocessing, training, validation, and final metrics in one go.",
+)
+
+if presentation_mode:
+    st.subheader("Live Presentation Mode")
+    st.caption("One-click walkthrough: data -> preprocessing -> model -> validation -> final results.")
+
+    explain_box(
+        "This mode auto-runs the full ML flow without extra button clicks.",
+        "Useful when you want to present quickly in class or demo.",
+    )
+
+    # Data + preprocessing summary
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Dataset rows", f"{len(df)}")
+    p2.metric("Feature columns", f"{X.shape[1]}")
+    p3.metric("Top K selected", f"{safe_k}")
+    st.write(
+        f"Preprocessing: {len(numeric_cols)} numeric columns (median + scaling), "
+        f"{len(categorical_cols)} categorical columns (mode + one-hot)."
+    )
+
+    st.markdown("#### Top selected features")
+    top_feature_df = feature_score_df.head(safe_k).copy()
+    st.dataframe(top_feature_df, use_container_width=True)
+    fig_fs = px.bar(
+        top_feature_df.sort_values("Score", ascending=True),
+        x="Score",
+        y="FeatureIndex",
+        orientation="h",
+        title=f"Top {safe_k} Features",
+    )
+    st.plotly_chart(fig_fs, use_container_width=True)
+
+    # Train/test
+    X_train, X_test, y_train, y_test = train_test_split(X, y, **split_kwargs)
+    demo_model = clone(final_pipeline)
+    demo_model.fit(X_train, y_train)
+    preds = demo_model.predict(X_test)
+    st.success("Model trained automatically.")
+
+    # Cross-validation
+    st.markdown("#### Cross-validation snapshot")
+    kf = KFold(n_splits=folds, shuffle=True, random_state=random_state)
+    cv_model = clone(final_pipeline)
+    if task_type == "regression":
+        neg_mse_scores = cross_val_score(
+            cv_model, X, y, cv=kf, scoring="neg_mean_squared_error", n_jobs=-1
+        )
+        rmse_scores = np.sqrt(-neg_mse_scores)
+        cv_df = pd.DataFrame({"Fold": np.arange(1, folds + 1), "RMSE": rmse_scores})
+        st.dataframe(cv_df, use_container_width=True)
+        st.metric("Average CV RMSE", f"{rmse_scores.mean():.4f}")
+    else:
+        acc_scores = cross_val_score(cv_model, X, y, cv=kf, scoring="accuracy", n_jobs=-1)
+        f1_scores = cross_val_score(cv_model, X, y, cv=kf, scoring="f1_weighted", n_jobs=-1)
+        cv_df = pd.DataFrame(
+            {
+                "Fold": np.arange(1, folds + 1),
+                "Accuracy": acc_scores,
+                "F1_weighted": f1_scores,
+            }
+        )
+        st.dataframe(cv_df, use_container_width=True)
+        c1, c2 = st.columns(2)
+        c1.metric("Average CV Accuracy", f"{acc_scores.mean():.4f}")
+        c2.metric("Average CV F1", f"{f1_scores.mean():.4f}")
+
+    # Final evaluation
+    st.markdown("#### Final evaluation on hold-out test set")
+    if task_type == "regression":
+        mse_val = mean_squared_error(y_test, preds)
+        mae_val = mean_absolute_error(y_test, preds)
+        rmse_val = np.sqrt(mse_val)
+        r2_val = r2_score(y_test, preds)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("MSE", f"{mse_val:.3f}")
+        c2.metric("MAE", f"{mae_val:.3f}")
+        c3.metric("RMSE", f"{rmse_val:.3f}")
+        c4.metric("R2", f"{r2_val:.3f}")
+
+        results_df = pd.DataFrame({"Actual": y_test.values, "Predicted": preds})
+        fig_pred = px.scatter(results_df, x="Actual", y="Predicted", title="Actual vs Predicted")
+        st.plotly_chart(fig_pred, use_container_width=True)
+    else:
+        acc_val = accuracy_score(y_test, preds)
+        precision_val = precision_score(y_test, preds, average="weighted", zero_division=0)
+        recall_val = recall_score(y_test, preds, average="weighted", zero_division=0)
+        f1_val = f1_score(y_test, preds, average="weighted", zero_division=0)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Accuracy", f"{acc_val:.3f}")
+        c2.metric("Precision", f"{precision_val:.3f}")
+        c3.metric("Recall", f"{recall_val:.3f}")
+        c4.metric("F1", f"{f1_val:.3f}")
+
+        confusion_df = pd.crosstab(
+            pd.Series(y_test, name="Actual"),
+            pd.Series(preds, name="Predicted"),
+        )
+        st.write("Confusion Matrix")
+        st.dataframe(confusion_df, use_container_width=True)
+
+    st.info("Tip: Turn off presentation mode if you want step-by-step interaction again.")
+    st.stop()
+
 if "step_idx" not in st.session_state:
     st.session_state.step_idx = 0
 
@@ -603,7 +713,7 @@ steps = [
     "9) Final Performance",
 ]
 
-selected_step = st.selectbox("Choose Pipeline Step", steps, index=st.session_state.step_idx)
+selected_step = st.selectbox("Choose a pipeline step", steps, index=st.session_state.step_idx)
 st.session_state.step_idx = steps.index(selected_step)
 st.progress((st.session_state.step_idx + 1) / len(steps), text=f"Current: {selected_step}")
 
