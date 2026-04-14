@@ -1,6 +1,7 @@
 import os
 import io
 from pathlib import Path
+from typing import Optional
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -51,7 +52,7 @@ st.markdown(
 )
 
 
-def _separator_candidates(separator_label: str) -> list[tuple[str | None, dict]]:
+def _separator_candidates(separator_label: str) -> list[tuple[Optional[str], dict]]:
     if separator_label == "Comma (,)":
         return [(",", {})]
     if separator_label == "Semicolon (;)":
