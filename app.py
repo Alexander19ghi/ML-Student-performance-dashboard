@@ -408,6 +408,22 @@ def detect_task_type(original_target: pd.Series, prepared_mode: str) -> str:
     return "regression"
 
 
+def safe_train_test_split(x_data, y_data, split_kwargs: dict):
+    try:
+        return train_test_split(x_data, y_data, **split_kwargs)
+    except ValueError:
+        # Common issue: stratified split fails when one class has very few samples.
+        if "stratify" in split_kwargs:
+            fallback_kwargs = {k: v for k, v in split_kwargs.items() if k != "stratify"}
+            if "stratify_fallback_warned" not in st.session_state:
+                st.warning(
+                    "Some classes are too small for stratified split, so a normal random split is used."
+                )
+                st.session_state.stratify_fallback_warned = True
+            return train_test_split(x_data, y_data, **fallback_kwargs)
+        raise
+
+
 def show_concept_explainer(task_type: str, model_name: str):
     with st.expander("Concept explainer: why this pipeline choice?", expanded=True):
         st.markdown(f"**Detected task:** `{task_type.title()}`")
@@ -543,7 +559,11 @@ elif y_mode == "categorical_encoded":
 st.sidebar.caption(f"Detected task: {task_type.title()}")
 split_kwargs = {"test_size": test_size, "random_state": random_state}
 if task_type == "classification" and y.nunique(dropna=True) > 1:
-    split_kwargs["stratify"] = y
+    class_counts = y.value_counts(dropna=True)
+    test_rows = int(np.ceil(len(y) * test_size))
+    train_rows = len(y) - test_rows
+    if class_counts.min() >= 2 and test_rows >= y.nunique(dropna=True) and train_rows >= y.nunique(dropna=True):
+        split_kwargs["stratify"] = y
 
 overview_c1, overview_c2, overview_c3, overview_c4 = st.columns(4)
 overview_c1.metric("Rows", f"{len(df)}")
@@ -627,7 +647,7 @@ if presentation_mode:
     st.plotly_chart(fig_fs, use_container_width=True)
 
     # Train/test
-    X_train, X_test, y_train, y_test = train_test_split(X, y, **split_kwargs)
+    X_train, X_test, y_train, y_test = safe_train_test_split(X, y, split_kwargs)
     demo_model = clone(final_pipeline)
     demo_model.fit(X_train, y_train)
     preds = demo_model.predict(X_test)
@@ -799,7 +819,7 @@ elif current_step == "5) Data Split":
         "We split data into training and testing sets.",
         "This checks if the model works on unseen data, not just memorized data.",
     )
-    X_train, X_test, y_train, y_test = train_test_split(X, y, **split_kwargs)
+    X_train, X_test, y_train, y_test = safe_train_test_split(X, y, split_kwargs)
     st.write(f"Train: {X_train.shape} | Test: {X_test.shape}")
 
 elif current_step == "6) Model Selection":
@@ -828,7 +848,7 @@ elif current_step == "7) Model Training":
         "Training is where the model learns relationships from examples.",
     )
     if st.button("Train Model"):
-        X_train, X_test, y_train, y_test = train_test_split(X, y, **split_kwargs)
+        X_train, X_test, y_train, y_test = safe_train_test_split(X, y, split_kwargs)
         final_pipeline.fit(X_train, y_train)
         st.success("Training completed.")
 
@@ -873,7 +893,7 @@ elif current_step == "9) Final Performance":
         "These numbers tell us how good the model is in practical use.",
     )
     if st.button("Evaluate Final Model"):
-        X_train, X_test, y_train, y_test = train_test_split(X, y, **split_kwargs)
+        X_train, X_test, y_train, y_test = safe_train_test_split(X, y, split_kwargs)
         eval_model = clone(final_pipeline)
         eval_model.fit(X_train, y_train)
         preds = eval_model.predict(X_test)
